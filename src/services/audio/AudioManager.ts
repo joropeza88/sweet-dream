@@ -24,7 +24,7 @@ class AudioManager {
 
       const element = new Audio(definition.audioSrc)
       element.loop = definition.loop
-      element.volume = 1
+      element.volume = definition.defaultVolume
       element.preload = 'metadata'
       element.playsInline = true
       this.ensureAudioRouting(definition.id, element)
