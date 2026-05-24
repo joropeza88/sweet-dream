@@ -12,7 +12,6 @@ class AudioManager {
   private unlocked = false
   private activeIds = new Set<string>()
   private activityListener?: (soundId: string, event: 'playing' | 'paused' | 'pending') => void
-  private readonly prefersNativeBackgroundAudio = this.detectNativeBackgroundAudioPreference()
   private preloadPromise: Promise<void> | null = null
 
   registerSounds(definitions: SoundDefinition[]) {
@@ -226,10 +225,6 @@ class AudioManager {
   }
 
   private getOrCreateAudioContext() {
-    if (this.prefersNativeBackgroundAudio) {
-      return null
-    }
-
     if (this.audioContext) {
       return this.audioContext
     }
@@ -240,18 +235,6 @@ class AudioManager {
 
     this.audioContext = new window.AudioContext()
     return this.audioContext
-  }
-
-  private detectNativeBackgroundAudioPreference() {
-    if (typeof navigator === 'undefined') {
-      return false
-    }
-
-    const userAgent = navigator.userAgent
-    const isIOSDevice = /iPad|iPhone|iPod/.test(userAgent)
-    const isMacTouchDevice = /Macintosh/.test(userAgent) && navigator.maxTouchPoints > 1
-
-    return isIOSDevice || isMacTouchDevice
   }
 
   private async resumeAudioContext() {
