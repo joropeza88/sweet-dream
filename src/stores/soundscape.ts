@@ -18,6 +18,10 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
   )
 
   const unlockRequested = ref(false)
+  const isPreloading = ref(true)
+  const preloadedCount = ref(0)
+  const totalSounds = ref(soundDefinitions.length)
+  let preloadPromise: Promise<void> | null = null
 
   audioManager.registerSounds(soundDefinitions)
   audioManager.setActivityListener((soundId, event) => {
@@ -48,6 +52,9 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
     sounds.value
       .filter((sound) => sound.enabled)
       .reduce((accumulator, sound) => accumulator + sound.volume, 0),
+  )
+  const preloadProgress = computed(() =>
+    totalSounds.value ? preloadedCount.value / totalSounds.value : 1,
   )
 
   const findSound = (soundId: string) => sounds.value.find((sound) => sound.id === soundId)
@@ -132,13 +139,39 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
     audioManager.stopAll()
   }
 
+  const preloadResources = async () => {
+    if (preloadPromise) {
+      return preloadPromise
+    }
+
+    isPreloading.value = true
+    preloadedCount.value = 0
+    totalSounds.value = soundDefinitions.length
+
+    preloadPromise = audioManager
+      .preloadAll((loaded, total) => {
+        preloadedCount.value = loaded
+        totalSounds.value = total
+      })
+      .finally(() => {
+        isPreloading.value = false
+      })
+
+    return preloadPromise
+  }
+
   return {
     sounds,
     activeCount,
     pendingCount,
     totalVolume,
+    isPreloading,
+    preloadedCount,
+    totalSounds,
+    preloadProgress,
     unlockRequested,
     ensureUnlocked,
+    preloadResources,
     toggleSound,
     setVolume,
     setDelay,

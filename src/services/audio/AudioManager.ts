@@ -12,6 +12,8 @@ class AudioManager {
   private unlocked = false
   private activeIds = new Set<string>()
   private activityListener?: (soundId: string, event: 'playing' | 'paused' | 'pending') => void
+  private readonly prefersNativeBackgroundAudio = this.detectNativeBackgroundAudioPreference()
+  private preloadPromise: Promise<void> | null = null
 
   registerSounds(definitions: SoundDefinition[]) {
     definitions.forEach((definition) => {
@@ -138,6 +140,33 @@ class AudioManager {
     this.registered.clear()
   }
 
+  preloadAll(onProgress?: (loaded: number, total: number) => void) {
+    if (this.preloadPromise) {
+      return this.preloadPromise
+    }
+
+    const entries = Array.from(this.elements.entries())
+    const total = entries.length
+    let loaded = 0
+
+    if (!total) {
+      onProgress?.(0, 0)
+      this.preloadPromise = Promise.resolve()
+      return this.preloadPromise
+    }
+
+    const markLoaded = () => {
+      loaded += 1
+      onProgress?.(loaded, total)
+    }
+
+    this.preloadPromise = Promise.allSettled(
+      entries.map(([soundId, element]) => this.preloadElement(soundId, element, markLoaded)),
+    ).then(() => undefined)
+
+    return this.preloadPromise
+  }
+
   private async playElement(soundId: string) {
     const element = this.elements.get(soundId)
 
@@ -197,6 +226,10 @@ class AudioManager {
   }
 
   private getOrCreateAudioContext() {
+    if (this.prefersNativeBackgroundAudio) {
+      return null
+    }
+
     if (this.audioContext) {
       return this.audioContext
     }
@@ -207,6 +240,18 @@ class AudioManager {
 
     this.audioContext = new window.AudioContext()
     return this.audioContext
+  }
+
+  private detectNativeBackgroundAudioPreference() {
+    if (typeof navigator === 'undefined') {
+      return false
+    }
+
+    const userAgent = navigator.userAgent
+    const isIOSDevice = /iPad|iPhone|iPod/.test(userAgent)
+    const isMacTouchDevice = /Macintosh/.test(userAgent) && navigator.maxTouchPoints > 1
+
+    return isIOSDevice || isMacTouchDevice
   }
 
   private async resumeAudioContext() {
@@ -221,6 +266,46 @@ class AudioManager {
     } catch {
       return
     }
+  }
+
+  private preloadElement(soundId: string, element: HTMLAudioElement, onLoaded: () => void) {
+    return new Promise<void>((resolve) => {
+      const finalize = () => {
+        cleanup()
+        onLoaded()
+        resolve()
+      }
+
+      const cleanup = () => {
+        window.clearTimeout(timeoutId)
+        element.removeEventListener('canplaythrough', handleReady)
+        element.removeEventListener('loadeddata', handleReady)
+        element.removeEventListener('error', handleReady)
+      }
+
+      const handleReady = () => {
+        finalize()
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        finalize()
+      }, 8000)
+
+      element.preload = 'auto'
+      element.load()
+
+      if (element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        finalize()
+        return
+      }
+
+      element.addEventListener('canplaythrough', handleReady, { once: true })
+      element.addEventListener('loadeddata', handleReady, { once: true })
+      element.addEventListener('error', () => {
+        console.warn(`No se pudo precargar el sonido "${soundId}"`)
+        handleReady()
+      }, { once: true })
+    })
   }
 
   private cancelTimer(soundId: string) {

@@ -32,6 +32,23 @@ input {
   min-height: 100vh;
 }
 
+.loading-bar {
+  background: linear-gradient(90deg, #1d354a 0%, #4d89b5 55%, #a9d6e5 100%);
+  box-shadow: 0 8px 24px rgba(77, 137, 181, 0.28);
+  transition: width 240ms ease;
+}
+
+.app-fade-enter-active,
+.app-fade-leave-active {
+  transition: opacity 220ms ease, transform 220ms ease;
+}
+
+.app-fade-enter-from,
+.app-fade-leave-to {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
 .range-slider {
   -webkit-appearance: none;
   appearance: none;
