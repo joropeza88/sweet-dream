@@ -1,9 +1,14 @@
 import type { SoundDefinition, SoundState } from '@/types/sound'
 
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+
 class AudioManager {
   private elements = new Map<string, HTMLAudioElement>()
+  private gainNodes = new Map<string, GainNode>()
+  private sourceNodes = new Map<string, MediaElementAudioSourceNode>()
   private pendingTimers = new Map<string, number>()
   private registered = new Map<string, SoundDefinition>()
+  private audioContext: AudioContext | null = null
   private unlocked = false
   private activeIds = new Set<string>()
   private activityListener?: (soundId: string, event: 'playing' | 'paused' | 'pending') => void
@@ -18,9 +23,11 @@ class AudioManager {
 
       const element = new Audio(definition.audioSrc)
       element.loop = definition.loop
-      element.volume = definition.defaultVolume
+      element.volume = 1
       element.preload = 'metadata'
       element.playsInline = true
+      this.ensureAudioRouting(definition.id, element)
+      this.applyVolume(definition.id, definition.defaultVolume)
       element.addEventListener('playing', () => {
         this.activityListener?.(definition.id, 'playing')
         this.syncMediaSession()
@@ -40,6 +47,8 @@ class AudioManager {
   }
 
   async unlock() {
+    await this.resumeAudioContext()
+
     const attempts = Array.from(this.elements.values()).map(async (element) => {
       try {
         element.muted = true
@@ -66,7 +75,7 @@ class AudioManager {
     }
 
     element.loop = sound.loop
-    element.volume = sound.volume
+    this.applyVolume(sound.id, sound.volume)
 
     if (!sound.enabled) {
       this.stop(sound.id)
@@ -92,11 +101,7 @@ class AudioManager {
   }
 
   updateVolume(soundId: string, volume: number) {
-    const element = this.elements.get(soundId)
-
-    if (element) {
-      element.volume = volume
-    }
+    this.applyVolume(soundId, volume)
   }
 
   stop(soundId: string) {
@@ -122,10 +127,14 @@ class AudioManager {
 
   dispose() {
     this.stopAll()
+    this.sourceNodes.forEach((source) => source.disconnect())
+    this.gainNodes.forEach((gain) => gain.disconnect())
     this.elements.forEach((element) => {
       element.src = ''
     })
     this.elements.clear()
+    this.gainNodes.clear()
+    this.sourceNodes.clear()
     this.registered.clear()
   }
 
@@ -140,6 +149,7 @@ class AudioManager {
     this.activeIds.add(soundId)
 
     try {
+      await this.resumeAudioContext()
       await element.play()
     } catch {
       this.activeIds.delete(soundId)
@@ -147,6 +157,70 @@ class AudioManager {
     }
 
     this.syncMediaSession()
+  }
+
+  private ensureAudioRouting(soundId: string, element: HTMLAudioElement) {
+    const context = this.getOrCreateAudioContext()
+
+    if (!context || this.gainNodes.has(soundId)) {
+      return
+    }
+
+    try {
+      const source = context.createMediaElementSource(element)
+      const gain = context.createGain()
+
+      source.connect(gain)
+      gain.connect(context.destination)
+
+      this.sourceNodes.set(soundId, source)
+      this.gainNodes.set(soundId, gain)
+    } catch {
+      this.sourceNodes.delete(soundId)
+      this.gainNodes.delete(soundId)
+    }
+  }
+
+  private applyVolume(soundId: string, volume: number) {
+    const nextVolume = clamp(volume, 0, 1)
+    const gain = this.gainNodes.get(soundId)
+
+    if (gain) {
+      gain.gain.value = nextVolume
+      return
+    }
+
+    const element = this.elements.get(soundId)
+    if (element) {
+      element.volume = nextVolume
+    }
+  }
+
+  private getOrCreateAudioContext() {
+    if (this.audioContext) {
+      return this.audioContext
+    }
+
+    if (typeof window === 'undefined' || !('AudioContext' in window)) {
+      return null
+    }
+
+    this.audioContext = new window.AudioContext()
+    return this.audioContext
+  }
+
+  private async resumeAudioContext() {
+    const context = this.getOrCreateAudioContext()
+
+    if (!context || context.state === 'running') {
+      return
+    }
+
+    try {
+      await context.resume()
+    } catch {
+      return
+    }
   }
 
   private cancelTimer(soundId: string) {
