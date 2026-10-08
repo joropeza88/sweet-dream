@@ -2,43 +2,25 @@
   <section class="flex flex-1 flex-col">
     <AppHeader
       :active-count="activeCount"
-      :total-volume-label="totalVolumeLabel"
+      :master-volume="masterVolume"
+      :master-volume-label="masterVolumeLabel"
       @stop-all="store.stopAll"
+      @set-master-volume="store.setMasterVolume"
     />
 
-    <button
-      type="button"
-      class="mb-5 rounded-[24px] border border-white/40 bg-white/45 px-5 py-4 text-left shadow-card backdrop-blur-xl transition hover:bg-white/55"
-      @click="ensureUnlocked"
-    >
-      <p class="text-xs uppercase tracking-[0.24em] text-mist-600">Compatibilidad iOS / Android</p>
-      <p class="mt-2 text-sm text-mist-800">{{ unlockLabel }}</p>
-      <p class="mt-1 text-xs text-mist-600">
-        La primera interacción activa los controles de volumen en PWA y Safari.
-      </p>
-    </button>
+    <p v-if="!unlockRequested" class="mb-5 px-1 text-xs leading-5 text-mist-600">
+      Al activar un sonido, Safari y Android usarán ese primer toque para habilitar el audio.
+    </p>
 
-    <div class="mb-5 grid grid-cols-2 gap-3">
-      <div class="rounded-[24px] border border-white/35 bg-white/35 p-4 shadow-card backdrop-blur-xl">
-        <p class="text-xs uppercase tracking-[0.24em] text-mist-600">Pendientes</p>
-        <p class="mt-2 text-xl font-semibold text-mist-900">{{ pendingCount }}</p>
-      </div>
-      <div class="rounded-[24px] border border-white/35 bg-white/35 p-4 shadow-card backdrop-blur-xl">
-        <p class="text-xs uppercase tracking-[0.24em] text-mist-600">Modo</p>
-        <p class="mt-2 text-xl font-semibold text-mist-900">Loop</p>
-      </div>
-    </div>
+    <section class="space-y-3">
+      <h2 class="px-1 text-xs font-semibold uppercase tracking-[0.2em] text-mist-600">Ambientes</h2>
+      <SoundCard v-for="sound in ambientSounds" :key="sound.id" :sound="sound" @toggle="store.toggleSound(sound.id)" @set-volume="(value) => store.setVolume(sound.id, value)" @set-delay="(value) => store.setDelay(sound.id, value)" />
+    </section>
 
-    <div class="space-y-4">
-      <SoundCard
-        v-for="sound in sounds"
-        :key="sound.id"
-        :sound="sound"
-        @toggle="store.toggleSound(sound.id)"
-        @set-volume="(value) => store.setVolume(sound.id, value)"
-        @set-delay="(value) => store.setDelay(sound.id, value)"
-      />
-    </div>
+    <section class="mt-6 space-y-3">
+      <h2 class="px-1 text-xs font-semibold uppercase tracking-[0.2em] text-mist-600">Fauna y clima</h2>
+      <SoundCard v-for="sound in faunaSounds" :key="sound.id" :sound="sound" @toggle="store.toggleSound(sound.id)" @set-volume="(value) => store.setVolume(sound.id, value)" @set-delay="(value) => store.setDelay(sound.id, value)" />
+    </section>
   </section>
 </template>
 
@@ -47,12 +29,11 @@ import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import AppHeader from '@/components/AppHeader.vue'
 import SoundCard from '@/components/SoundCard.vue'
-import { useAudioUnlock } from '@/composables/useAudioUnlock'
 import { useSoundscapeStore } from '@/stores/soundscape'
 
 const store = useSoundscapeStore()
-const { sounds, activeCount, pendingCount, totalVolume } = storeToRefs(store)
-const { unlockLabel, ensureUnlocked } = useAudioUnlock()
-
-const totalVolumeLabel = computed(() => `${Math.round(totalVolume.value * 100)}%`)
+const { sounds, activeCount, masterVolume, unlockRequested } = storeToRefs(store)
+const masterVolumeLabel = computed(() => `${Math.round(masterVolume.value * 100)}%`)
+const ambientSounds = computed(() => sounds.value.filter((sound) => sound.kind === 'long'))
+const faunaSounds = computed(() => sounds.value.filter((sound) => sound.kind === 'short'))
 </script>

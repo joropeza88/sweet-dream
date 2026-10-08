@@ -1,3 +1,6 @@
+export type SoundKind = 'long' | 'short'
+export type SoundPlaybackStatus = 'idle' | 'playing' | 'waiting'
+
 export interface SoundDefinition {
   id: string
   name: string
@@ -5,7 +8,8 @@ export interface SoundDefinition {
   audioSrc: string
   defaultVolume: number
   defaultDelay: number
-  loop: boolean
+  kind: SoundKind
+  fadeDuration: number
   category?: string
 }
 
@@ -14,4 +18,5 @@ export interface SoundState extends SoundDefinition {
   volume: number
   delay: number
   isPending: boolean
+  status: SoundPlaybackStatus
 }

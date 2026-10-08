@@ -79,6 +79,31 @@ input {
   box-shadow: 0 8px 18px rgba(29, 53, 74, 0.28);
 }
 
+.range-slider--dark {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.95), rgba(169, 214, 229, 0.55));
+}
+
+.range-slider--dark::-webkit-slider-thumb {
+  background: #ffffff;
+  border-color: rgba(29, 53, 74, 0.45);
+}
+
+.range-slider--dark::-moz-range-thumb {
+  background: #ffffff;
+  border-color: rgba(29, 53, 74, 0.45);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
 @supports (padding: max(0px)) {
   body {
     padding-top: env(safe-area-inset-top);

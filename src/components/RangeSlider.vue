@@ -1,6 +1,6 @@
 <template>
   <label class="block">
-    <div class="mb-2 flex items-center justify-between text-xs uppercase tracking-[0.22em] text-mist-600">
+    <div class="mb-2 flex items-center justify-between text-xs uppercase tracking-[0.16em]" :class="dark ? 'text-white/70' : 'text-mist-600'">
       <span>{{ label }}</span>
       <span>{{ valueLabel }}</span>
     </div>
@@ -11,6 +11,7 @@
       :step="step"
       type="range"
       class="range-slider"
+      :class="{ 'range-slider--dark': dark }"
       @input="onInput"
     />
   </label>
@@ -24,6 +25,7 @@ const props = defineProps<{
   max: number
   step: number
   valueLabel: string
+  dark?: boolean
 }>()
 
 const emit = defineEmits<{

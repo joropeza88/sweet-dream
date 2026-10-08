@@ -1,22 +1,39 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { soundDefinitions } from '@/data/sounds'
 import { audioManager } from '@/services/audio/AudioManager'
 import type { SoundState } from '@/types/sound'
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+const PREFERENCES_KEY = 'sweet-dream:preferences:v1'
+
+type SavedPreferences = {
+  masterVolume?: number
+  sounds?: Record<string, Pick<SoundState, 'enabled' | 'volume' | 'delay'>>
+}
+
+const loadPreferences = (): SavedPreferences => {
+  try {
+    return JSON.parse(localStorage.getItem(PREFERENCES_KEY) ?? '{}') as SavedPreferences
+  } catch {
+    return {}
+  }
+}
 
 export const useSoundscapeStore = defineStore('soundscape', () => {
+  const preferences = loadPreferences()
   const sounds = ref<SoundState[]>(
     soundDefinitions.map((sound) => ({
       ...sound,
-      enabled: false,
-      volume: sound.defaultVolume,
-      delay: sound.defaultDelay,
+      enabled: preferences.sounds?.[sound.id]?.enabled ?? false,
+      volume: clamp(preferences.sounds?.[sound.id]?.volume ?? sound.defaultVolume, 0, 1),
+      delay: clamp(preferences.sounds?.[sound.id]?.delay ?? sound.defaultDelay, 0, 12),
       isPending: false,
+      status: 'idle',
     })),
   )
 
+  const masterVolume = ref(clamp(preferences.masterVolume ?? 1, 0, 1))
   const unlockRequested = ref(false)
   const isPreloading = ref(true)
   const preloadedCount = ref(0)
@@ -24,35 +41,19 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
   let preloadPromise: Promise<void> | null = null
 
   audioManager.registerSounds(soundDefinitions)
-  audioManager.setActivityListener((soundId, event) => {
+  audioManager.setActivityListener((soundId, status) => {
     const sound = findSound(soundId)
 
     if (!sound) {
       return
     }
 
-    if (event === 'pending') {
-      sound.isPending = true
-      return
-    }
-
-    if (event === 'playing') {
-      sound.isPending = false
-      return
-    }
-
-    if (!sound.enabled) {
-      sound.isPending = false
-    }
+    sound.status = status
+    sound.isPending = status === 'waiting'
   })
 
   const activeCount = computed(() => sounds.value.filter((sound) => sound.enabled).length)
   const pendingCount = computed(() => sounds.value.filter((sound) => sound.isPending).length)
-  const totalVolume = computed(() =>
-    sounds.value
-      .filter((sound) => sound.enabled)
-      .reduce((accumulator, sound) => accumulator + sound.volume, 0),
-  )
   const preloadProgress = computed(() =>
     totalSounds.value ? preloadedCount.value / totalSounds.value : 1,
   )
@@ -67,7 +68,11 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
 
     try {
       await audioManager.unlock()
+      audioManager.setMasterVolume(masterVolume.value)
       unlockRequested.value = true
+      // Las pistas activas guardadas se restauran sólo después de un gesto
+      // válido; nunca se inicia audio automáticamente al abrir la PWA.
+      await Promise.all(sounds.value.filter((sound) => sound.enabled).map((sound) => updateSound(sound.id)))
       return true
     } catch {
       return false
@@ -81,7 +86,7 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
       return
     }
 
-    sound.isPending = sound.enabled && sound.delay > 0
+    sound.isPending = false
     await audioManager.updatePlayback(sound)
   }
 
@@ -101,7 +106,8 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
     }
 
     sound.enabled = nextValue
-    sound.isPending = nextValue && sound.delay > 0
+    sound.isPending = false
+    sound.status = nextValue ? 'playing' : 'idle'
     await updateSound(soundId)
   }
 
@@ -124,17 +130,19 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
     }
 
     sound.delay = clamp(delay, 0, 12)
+    audioManager.updateDelay(soundId, sound.delay)
+  }
 
-    if (sound.enabled) {
-      sound.isPending = sound.delay > 0
-      await updateSound(soundId)
-    }
+  const setMasterVolume = (volume: number) => {
+    masterVolume.value = clamp(volume, 0, 1)
+    audioManager.setMasterVolume(masterVolume.value)
   }
 
   const stopAll = () => {
     sounds.value.forEach((sound) => {
       sound.enabled = false
       sound.isPending = false
+      sound.status = 'idle'
     })
     audioManager.stopAll()
   }
@@ -160,11 +168,27 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
     return preloadPromise
   }
 
+  watch(
+    [sounds, masterVolume],
+    () => {
+      const saved: SavedPreferences = {
+        masterVolume: masterVolume.value,
+        sounds: Object.fromEntries(sounds.value.map((sound) => [sound.id, {
+          enabled: sound.enabled,
+          volume: sound.volume,
+          delay: sound.delay,
+        }])),
+      }
+      localStorage.setItem(PREFERENCES_KEY, JSON.stringify(saved))
+    },
+    { deep: true },
+  )
+
   return {
     sounds,
     activeCount,
     pendingCount,
-    totalVolume,
+    masterVolume,
     isPreloading,
     preloadedCount,
     totalSounds,
@@ -174,6 +198,7 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
     preloadResources,
     toggleSound,
     setVolume,
+    setMasterVolume,
     setDelay,
     stopAll,
   }

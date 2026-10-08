@@ -1,61 +1,59 @@
-import type { SoundDefinition, SoundState } from '@/types/sound'
+import type { SoundDefinition, SoundPlaybackStatus, SoundState } from '@/types/sound'
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+const STOP_FADE_SECONDS = 0.2
+
+type AudioGraph = {
+  source: MediaElementAudioSourceNode
+  userGain: GainNode
+  envelopeGain: GainNode
+}
+
+type PendingWait = {
+  timeout: number
+  resolve: () => void
+}
 
 class AudioManager {
   private elements = new Map<string, HTMLAudioElement>()
-  private gainNodes = new Map<string, GainNode>()
-  private sourceNodes = new Map<string, MediaElementAudioSourceNode>()
-  private volumes = new Map<string, number>()
-  private pendingTimers = new Map<string, number>()
-  private registered = new Map<string, SoundDefinition>()
+  private definitions = new Map<string, SoundDefinition>()
+  private playback = new Map<string, SoundState>()
+  private graphs = new Map<string, AudioGraph>()
+  private generations = new Map<string, number>()
+  private waitTimers = new Map<string, PendingWait>()
   private audioContext: AudioContext | null = null
+  private masterGain: GainNode | null = null
+  private compressor: DynamicsCompressorNode | null = null
   private unlocked = false
   private activeIds = new Set<string>()
-  private activityListener?: (soundId: string, event: 'playing' | 'paused' | 'pending') => void
+  private activityListener?: (soundId: string, status: SoundPlaybackStatus) => void
   private preloadPromise: Promise<void> | null = null
 
   registerSounds(definitions: SoundDefinition[]) {
     definitions.forEach((definition) => {
-      this.registered.set(definition.id, definition)
-
-      if (this.elements.has(definition.id)) {
-        return
-      }
+      this.definitions.set(definition.id, definition)
+      if (this.elements.has(definition.id)) return
 
       const element = new Audio(definition.audioSrc)
-      element.loop = definition.loop
-      // El volumen se controla exclusivamente desde el GainNode. Mantener el
-      // elemento nativo a 1 evita aplicar el volumen dos veces.
+      element.loop = false
       element.volume = 1
       element.preload = 'metadata'
       element.playsInline = true
-      this.volumes.set(definition.id, definition.defaultVolume)
-      element.addEventListener('playing', () => {
-        this.activityListener?.(definition.id, 'playing')
-        this.syncMediaSession()
-      })
-      element.addEventListener('pause', () => {
-        this.activityListener?.(definition.id, 'paused')
-        this.syncMediaSession()
-      })
+      element.addEventListener('playing', () => this.syncMediaSession())
+      element.addEventListener('pause', () => this.syncMediaSession())
       this.elements.set(definition.id, element)
+      this.generations.set(definition.id, 0)
     })
-
     this.syncMediaSession()
   }
 
-  setActivityListener(listener: (soundId: string, event: 'playing' | 'paused' | 'pending') => void) {
+  setActivityListener(listener: (soundId: string, status: SoundPlaybackStatus) => void) {
     this.activityListener = listener
   }
 
   async unlock() {
-    // Safari sólo permite crear y reanudar el contexto de Web Audio a partir
-    // de un gesto del usuario. No lo inicializamos al cargar la app: así los
-    // GainNode conservan el control individual de volumen en iOS.
     this.connectAudioGraph()
     const resumePromise = this.resumeAudioContext()
-
     const attempts = Array.from(this.elements.values()).map(async (element) => {
       try {
         element.muted = true
@@ -64,68 +62,76 @@ class AudioManager {
         element.pause()
         element.currentTime = 0
       } catch {
-        return
+        // El siguiente toque para activar una pista volverá a intentarlo.
       } finally {
         element.muted = false
       }
     })
-
     await Promise.allSettled([...attempts, resumePromise])
     this.unlocked = true
   }
 
   async updatePlayback(sound: SoundState) {
-    const element = this.elements.get(sound.id)
-
-    if (!element) {
-      return
-    }
-
-    element.loop = sound.loop
-    this.applyVolume(sound.id, sound.volume)
+    this.playback.set(sound.id, { ...sound })
+    this.setUserVolume(sound.id, sound.volume)
+    this.invalidate(sound.id)
 
     if (!sound.enabled) {
       this.stop(sound.id)
       return
     }
 
-    this.cancelTimer(sound.id)
     this.activeIds.add(sound.id)
-    element.load()
-
-    if (sound.delay > 0) {
-      this.activityListener?.(sound.id, 'pending')
-      const timer = window.setTimeout(() => {
-        void this.playElement(sound.id)
-      }, sound.delay * 1000)
-
-      this.pendingTimers.set(sound.id, timer)
-      this.syncMediaSession()
-      return
-    }
-
-    await this.playElement(sound.id)
+    const generation = this.currentGeneration(sound.id)
+    await this.resumeAudioContext()
+    void this.runCycle(sound.id, generation)
+    this.syncMediaSession()
   }
 
   updateVolume(soundId: string, volume: number) {
-    this.applyVolume(soundId, volume)
+    const state = this.playback.get(soundId)
+    if (state) state.volume = clamp(volume, 0, 1)
+    this.setUserVolume(soundId, volume)
+  }
+
+  updateDelay(soundId: string, delay: number) {
+    const state = this.playback.get(soundId)
+    if (state) state.delay = Math.max(0, delay)
+  }
+
+  setMasterVolume(volume: number) {
+    const next = clamp(volume, 0, 1)
+    if (this.masterGain && this.audioContext) {
+      this.masterGain.gain.setTargetAtTime(next, this.audioContext.currentTime, 0.02)
+    }
   }
 
   stop(soundId: string) {
-    this.cancelTimer(soundId)
-
+    this.invalidate(soundId)
+    this.activeIds.delete(soundId)
     const element = this.elements.get(soundId)
-    if (element) {
+    const graph = this.graphs.get(soundId)
+    const context = this.audioContext
+    if (graph && context) {
+      graph.envelopeGain.gain.cancelScheduledValues(context.currentTime)
+      graph.envelopeGain.gain.setValueAtTime(graph.envelopeGain.gain.value, context.currentTime)
+      graph.envelopeGain.gain.linearRampToValueAtTime(0, context.currentTime + STOP_FADE_SECONDS)
+      window.setTimeout(() => {
+        if (!this.activeIds.has(soundId)) {
+          element?.pause()
+          if (element) element.currentTime = 0
+        }
+      }, STOP_FADE_SECONDS * 1000)
+    } else if (element) {
       element.pause()
       element.currentTime = 0
     }
-
-    this.activeIds.delete(soundId)
+    this.activityListener?.(soundId, 'idle')
     this.syncMediaSession()
   }
 
   stopAll() {
-    Array.from(this.registered.keys()).forEach((soundId) => this.stop(soundId))
+    Array.from(this.elements.keys()).forEach((soundId) => this.stop(soundId))
   }
 
   get unlockedByUser() {
@@ -134,234 +140,277 @@ class AudioManager {
 
   dispose() {
     this.stopAll()
-    this.sourceNodes.forEach((source) => source.disconnect())
-    this.gainNodes.forEach((gain) => gain.disconnect())
-    this.elements.forEach((element) => {
-      element.src = ''
+    this.graphs.forEach(({ source, userGain, envelopeGain }) => {
+      source.disconnect()
+      userGain.disconnect()
+      envelopeGain.disconnect()
     })
+    this.elements.forEach((element) => { element.src = '' })
     this.elements.clear()
-    this.gainNodes.clear()
-    this.sourceNodes.clear()
-    this.volumes.clear()
-    this.registered.clear()
+    this.graphs.clear()
+    this.definitions.clear()
+    this.playback.clear()
   }
 
   preloadAll(onProgress?: (loaded: number, total: number) => void) {
-    if (this.preloadPromise) {
-      return this.preloadPromise
-    }
-
+    if (this.preloadPromise) return this.preloadPromise
     const entries = Array.from(this.elements.entries())
-    const total = entries.length
     let loaded = 0
-
-    if (!total) {
-      onProgress?.(0, 0)
-      this.preloadPromise = Promise.resolve()
-      return this.preloadPromise
-    }
-
-    const markLoaded = () => {
-      loaded += 1
-      onProgress?.(loaded, total)
-    }
-
-    this.preloadPromise = Promise.allSettled(
-      entries.map(([soundId, element]) => this.preloadElement(soundId, element, markLoaded)),
-    ).then(() => undefined)
-
+    const markLoaded = () => onProgress?.(++loaded, entries.length)
+    this.preloadPromise = Promise.allSettled(entries.map(([id, element]) => this.preloadElement(id, element, markLoaded)))
+      .then(() => undefined)
     return this.preloadPromise
   }
 
-  private async playElement(soundId: string) {
-    const element = this.elements.get(soundId)
+  private async runCycle(soundId: string, generation: number) {
+    const state = this.playback.get(soundId)
+    if (!state || !this.isCurrent(soundId, generation)) return
+    if (state.kind === 'long') await this.runLongCycle(soundId, generation)
+    else await this.runShortCycle(soundId, generation)
+  }
 
-    if (!element) {
+  private async runLongCycle(soundId: string, generation: number) {
+    while (this.isCurrent(soundId, generation)) {
+      const state = this.playback.get(soundId)
+      const element = this.elements.get(soundId)
+      if (!state || !element) return
+      this.activityListener?.(soundId, 'playing')
+      if (!(await this.playLongClip(soundId, generation))) return
+      if (!this.isCurrent(soundId, generation)) return
+      this.activityListener?.(soundId, 'waiting')
+      if (!(await this.wait(soundId, generation, state.delay * 1000))) return
+    }
+  }
+
+  private async runShortCycle(soundId: string, generation: number) {
+    while (this.isCurrent(soundId, generation)) {
+      const state = this.playback.get(soundId)
+      if (!state) return
+      this.activityListener?.(soundId, 'playing')
+      if (!(await this.playShortClip(soundId, generation))) return
+      if (!this.isCurrent(soundId, generation)) return
+      this.activityListener?.(soundId, 'waiting')
+      const delay = state.delay > 0 ? (0.25 + Math.random() * 0.75) * state.delay * 1000 : 0
+      if (!(await this.wait(soundId, generation, delay))) return
+    }
+  }
+
+  private async playLongClip(soundId: string, generation: number) {
+    const element = this.elements.get(soundId)
+    const state = this.playback.get(soundId)
+    if (!element || !state) return false
+    element.pause()
+    element.currentTime = 0
+    this.setEnvelope(soundId, 0)
+    try { await element.play() } catch { return false }
+    if (!this.isCurrent(soundId, generation)) return false
+    const duration = await this.durationOf(element, soundId, generation)
+    if (!this.isCurrent(soundId, generation)) return false
+    const fade = Math.min(state.fadeDuration, duration / 2)
+    this.scheduleLongEnvelope(soundId, duration, fade)
+    return this.waitForEnd(soundId, generation, element)
+  }
+
+  private async playShortClip(soundId: string, generation: number) {
+    const element = this.elements.get(soundId)
+    if (!element) return false
+    element.pause()
+    element.currentTime = 0
+    const relativeGain = this.randomDistanceGain()
+    this.scheduleShortEnvelope(soundId, relativeGain)
+    try { await element.play() } catch { return false }
+    const duration = await this.durationOf(element, soundId, generation)
+    if (!this.isCurrent(soundId, generation)) return false
+    this.scheduleShortFadeOut(soundId, duration, element.currentTime)
+    return this.waitForEnd(soundId, generation, element)
+  }
+
+  private randomDistanceGain() {
+    const chance = Math.random()
+    if (chance < 0.4) return 0.15 + Math.random() * 0.2
+    if (chance < 0.8) return 0.35 + Math.random() * 0.35
+    return 0.7 + Math.random() * 0.3
+  }
+
+  private scheduleLongEnvelope(soundId: string, duration: number, fade: number) {
+    const graph = this.graphs.get(soundId)
+    const context = this.audioContext
+    if (!graph || !context) return
+    const now = context.currentTime
+    const gain = graph.envelopeGain.gain
+    gain.cancelScheduledValues(now)
+    gain.setValueAtTime(0, now)
+    gain.linearRampToValueAtTime(1, now + fade)
+    gain.setValueAtTime(1, now + Math.max(fade, duration - fade))
+    gain.linearRampToValueAtTime(0, now + duration)
+  }
+
+  private scheduleShortEnvelope(soundId: string, relativeGain: number) {
+    const graph = this.graphs.get(soundId)
+    const context = this.audioContext
+    if (!graph || !context) return
+    const now = context.currentTime
+    const gain = graph.envelopeGain.gain
+    gain.cancelScheduledValues(now)
+    gain.setValueAtTime(0, now)
+    gain.linearRampToValueAtTime(relativeGain, now + 0.03)
+  }
+
+  private scheduleShortFadeOut(soundId: string, duration: number, elapsed: number) {
+    const graph = this.graphs.get(soundId)
+    const context = this.audioContext
+    if (!graph || !context || !duration) return
+    const now = context.currentTime
+    const remaining = Math.max(0, duration - elapsed)
+    const fade = Math.min(0.03, remaining / 2)
+    const gain = graph.envelopeGain.gain
+    gain.setValueAtTime(gain.value, now)
+    gain.setValueAtTime(gain.value, now + Math.max(0, remaining - fade))
+    gain.linearRampToValueAtTime(0, now + remaining)
+  }
+
+  private setUserVolume(soundId: string, volume: number) {
+    const next = clamp(volume, 0, 1)
+    const graph = this.graphs.get(soundId)
+    if (graph && this.audioContext) {
+      graph.userGain.gain.setTargetAtTime(next, this.audioContext.currentTime, 0.02)
       return
     }
+    const element = this.elements.get(soundId)
+    if (element) element.volume = next
+  }
 
-    this.cancelTimer(soundId)
-    this.activeIds.add(soundId)
-
-    try {
-      await this.resumeAudioContext()
-      await element.play()
-    } catch {
-      this.activeIds.delete(soundId)
-      this.activityListener?.(soundId, 'paused')
-    }
-
-    this.syncMediaSession()
+  private setEnvelope(soundId: string, value: number) {
+    const graph = this.graphs.get(soundId)
+    if (graph && this.audioContext) graph.envelopeGain.gain.setValueAtTime(value, this.audioContext.currentTime)
   }
 
   private connectAudioGraph() {
     const context = this.getOrCreateAudioContext()
-
-    if (!context) {
-      return
-    }
-
+    if (!context || !this.masterGain || !this.compressor) return
     this.elements.forEach((element, soundId) => {
-      this.ensureAudioRouting(soundId, element)
-      this.applyVolume(soundId, this.volumes.get(soundId) ?? 1)
+      if (this.graphs.has(soundId)) return
+      const source = context.createMediaElementSource(element)
+      const userGain = context.createGain()
+      const envelopeGain = context.createGain()
+      source.connect(userGain)
+      userGain.connect(envelopeGain)
+      envelopeGain.connect(this.compressor)
+      this.graphs.set(soundId, { source, userGain, envelopeGain })
+      this.setUserVolume(soundId, this.playback.get(soundId)?.volume ?? this.definitions.get(soundId)?.defaultVolume ?? 1)
+      this.setEnvelope(soundId, 0)
     })
   }
 
-  private ensureAudioRouting(soundId: string, element: HTMLAudioElement) {
-    const context = this.getOrCreateAudioContext()
-
-    if (!context || this.gainNodes.has(soundId)) {
-      return
-    }
-
-    try {
-      const source = context.createMediaElementSource(element)
-      const gain = context.createGain()
-
-      source.connect(gain)
-      gain.connect(context.destination)
-
-      this.sourceNodes.set(soundId, source)
-      this.gainNodes.set(soundId, gain)
-    } catch {
-      this.sourceNodes.delete(soundId)
-      this.gainNodes.delete(soundId)
-    }
-  }
-
-  private applyVolume(soundId: string, volume: number) {
-    const nextVolume = clamp(volume, 0, 1)
-    this.volumes.set(soundId, nextVolume)
-    const gain = this.gainNodes.get(soundId)
-
-    if (gain) {
-      const element = this.elements.get(soundId)
-      if (element) {
-        element.volume = 1
-      }
-      gain.gain.value = nextVolume
-      return
-    }
-
-    const element = this.elements.get(soundId)
-    if (element) {
-      element.volume = nextVolume
-    }
-  }
-
   private getOrCreateAudioContext() {
-    if (this.audioContext) {
-      return this.audioContext
-    }
-
-    if (typeof window === 'undefined' || !('AudioContext' in window)) {
-      return null
-    }
-
-    this.audioContext = new window.AudioContext()
-    return this.audioContext
+    if (this.audioContext) return this.audioContext
+    if (typeof window === 'undefined' || !('AudioContext' in window)) return null
+    const context = new window.AudioContext()
+    const compressor = context.createDynamicsCompressor()
+    compressor.threshold.value = -18
+    compressor.knee.value = 12
+    compressor.ratio.value = 4
+    const masterGain = context.createGain()
+    compressor.connect(masterGain)
+    masterGain.connect(context.destination)
+    this.audioContext = context
+    this.compressor = compressor
+    this.masterGain = masterGain
+    return context
   }
 
   private async resumeAudioContext() {
-    const context = this.getOrCreateAudioContext()
+    const context = this.audioContext
+    if (!context || context.state === 'running') return
+    try { await context.resume() } catch { /* Safari may require another gesture. */ }
+  }
 
-    if (!context || context.state === 'running') {
-      return
-    }
+  private durationOf(element: HTMLAudioElement, soundId: string, generation: number) {
+    if (Number.isFinite(element.duration) && element.duration > 0) return Promise.resolve(element.duration)
+    return new Promise<number>((resolve) => {
+      const finish = () => {
+        element.removeEventListener('loadedmetadata', finish)
+        resolve(Number.isFinite(element.duration) && element.duration > 0 ? element.duration : 0)
+      }
+      element.addEventListener('loadedmetadata', finish, { once: true })
+      if (!this.isCurrent(soundId, generation)) finish()
+    })
+  }
 
-    try {
-      await context.resume()
-    } catch {
-      return
+  private waitForEnd(soundId: string, generation: number, element: HTMLAudioElement) {
+    return new Promise<boolean>((resolve) => {
+      const finish = () => {
+        element.removeEventListener('ended', finish)
+        element.removeEventListener('pause', finish)
+        resolve(this.isCurrent(soundId, generation))
+      }
+      element.addEventListener('ended', finish, { once: true })
+      element.addEventListener('pause', finish, { once: true })
+    })
+  }
+
+  private wait(soundId: string, generation: number, milliseconds: number) {
+    return new Promise<boolean>((resolve) => {
+      const finish = () => resolve(this.isCurrent(soundId, generation))
+      const timeout = window.setTimeout(() => {
+        this.waitTimers.delete(soundId)
+        finish()
+      }, milliseconds)
+      this.waitTimers.set(soundId, { timeout, resolve: finish })
+    })
+  }
+
+  private invalidate(soundId: string) {
+    this.generations.set(soundId, this.currentGeneration(soundId) + 1)
+    const pendingWait = this.waitTimers.get(soundId)
+    if (pendingWait) {
+      window.clearTimeout(pendingWait.timeout)
+      this.waitTimers.delete(soundId)
+      pendingWait.resolve()
     }
+  }
+
+  private currentGeneration(soundId: string) { return this.generations.get(soundId) ?? 0 }
+  private isCurrent(soundId: string, generation: number) {
+    return this.activeIds.has(soundId) && this.currentGeneration(soundId) === generation
   }
 
   private preloadElement(soundId: string, element: HTMLAudioElement, onLoaded: () => void) {
     return new Promise<void>((resolve) => {
-      const finalize = () => {
-        cleanup()
+      let done = false
+      const finish = () => {
+        if (done) return
+        done = true
+        window.clearTimeout(timeout)
+        element.removeEventListener('canplaythrough', finish)
+        element.removeEventListener('loadeddata', finish)
+        element.removeEventListener('error', finish)
         onLoaded()
         resolve()
       }
-
-      const cleanup = () => {
-        window.clearTimeout(timeoutId)
-        element.removeEventListener('canplaythrough', handleReady)
-        element.removeEventListener('loadeddata', handleReady)
-        element.removeEventListener('error', handleReady)
-      }
-
-      const handleReady = () => {
-        finalize()
-      }
-
-      const timeoutId = window.setTimeout(() => {
-        finalize()
-      }, 8000)
-
+      const timeout = window.setTimeout(finish, 8000)
       element.preload = 'auto'
       element.load()
-
-      if (element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-        finalize()
-        return
+      if (element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) finish()
+      else {
+        element.addEventListener('canplaythrough', finish, { once: true })
+        element.addEventListener('loadeddata', finish, { once: true })
+        element.addEventListener('error', () => { console.warn(`No se pudo precargar el sonido "${soundId}"`); finish() }, { once: true })
       }
-
-      element.addEventListener('canplaythrough', handleReady, { once: true })
-      element.addEventListener('loadeddata', handleReady, { once: true })
-      element.addEventListener('error', () => {
-        console.warn(`No se pudo precargar el sonido "${soundId}"`)
-        handleReady()
-      }, { once: true })
     })
-  }
-
-  private cancelTimer(soundId: string) {
-    const timer = this.pendingTimers.get(soundId)
-    if (timer) {
-      window.clearTimeout(timer)
-      this.pendingTimers.delete(soundId)
-    }
   }
 
   private syncMediaSession() {
-    if (!('mediaSession' in navigator)) {
-      return
-    }
-
-    const activeSoundIds = Array.from(this.activeIds)
-    const activeSounds = activeSoundIds
-      .map((id) => this.registered.get(id)?.name)
-      .filter((value): value is string => Boolean(value))
-    const isActuallyPlaying = activeSoundIds.some((id) => {
-      const element = this.elements.get(id)
-      return element ? !element.paused : false
-    })
-
+    if (!('mediaSession' in navigator)) return
+    const names = Array.from(this.activeIds).map((id) => this.definitions.get(id)?.name).filter(Boolean)
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: activeSounds.length ? 'Sweet Dream en reproducción' : 'Sweet Dream',
-      artist: activeSounds.length ? activeSounds.join(' • ') : 'Sonidos ambientales',
+      title: names.length ? 'Sweet Dream en reproducción' : 'Sweet Dream',
+      artist: names.length ? names.join(' • ') : 'Sonidos ambientales',
       album: 'Relax mix',
-      artwork: [
-        { src: '/icons/pwa-192.png', sizes: '192x192', type: 'image/png' },
-        { src: '/icons/pwa-512.png', sizes: '512x512', type: 'image/png' },
-      ],
+      artwork: [{ src: '/icons/pwa-192.png', sizes: '192x192', type: 'image/png' }],
     })
-
-    navigator.mediaSession.playbackState = isActuallyPlaying ? 'playing' : 'paused'
-    navigator.mediaSession.setActionHandler('play', async () => {
-      const elements = Array.from(this.activeIds)
-        .map((soundId) => this.elements.get(soundId))
-        .filter((value): value is HTMLAudioElement => Boolean(value))
-
-      await Promise.all(elements.map((element) => element.play()))
-    })
-    navigator.mediaSession.setActionHandler('pause', () => {
-      this.activeIds.forEach((soundId) => {
-        const element = this.elements.get(soundId)
-        element?.pause()
-      })
-    })
+    navigator.mediaSession.playbackState = names.length ? 'playing' : 'paused'
+    navigator.mediaSession.setActionHandler('pause', () => this.stopAll())
   }
 }
 
