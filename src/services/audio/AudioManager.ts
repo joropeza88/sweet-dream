@@ -213,15 +213,16 @@ class AudioManager {
 
   private async playShortClip(soundId: string, generation: number) {
     const element = this.elements.get(soundId)
-    if (!element) return false
+    const state = this.playback.get(soundId)
+    if (!element || !state) return false
     element.pause()
     element.currentTime = 0
     const relativeGain = this.randomDistanceGain()
-    this.scheduleShortEnvelope(soundId, relativeGain)
+    this.scheduleShortEnvelope(soundId, relativeGain, state.fadeDuration)
     try { await element.play() } catch { return false }
     const duration = await this.durationOf(element, soundId, generation)
     if (!this.isCurrent(soundId, generation)) return false
-    this.scheduleShortFadeOut(soundId, duration, element.currentTime)
+    this.scheduleShortFadeOut(soundId, relativeGain, duration, element.currentTime, state.fadeDuration)
     return this.waitForEnd(soundId, generation, element)
   }
 
@@ -245,7 +246,7 @@ class AudioManager {
     gain.linearRampToValueAtTime(0, now + duration)
   }
 
-  private scheduleShortEnvelope(soundId: string, relativeGain: number) {
+  private scheduleShortEnvelope(soundId: string, relativeGain: number, requestedFade: number) {
     const graph = this.graphs.get(soundId)
     const context = this.audioContext
     if (!graph || !context) return
@@ -253,19 +254,24 @@ class AudioManager {
     const gain = graph.envelopeGain.gain
     gain.cancelScheduledValues(now)
     gain.setValueAtTime(0, now)
-    gain.linearRampToValueAtTime(relativeGain, now + 0.03)
+    gain.linearRampToValueAtTime(relativeGain, now + requestedFade)
   }
 
-  private scheduleShortFadeOut(soundId: string, duration: number, elapsed: number) {
+  private scheduleShortFadeOut(
+    soundId: string,
+    relativeGain: number,
+    duration: number,
+    elapsed: number,
+    requestedFade: number,
+  ) {
     const graph = this.graphs.get(soundId)
     const context = this.audioContext
     if (!graph || !context || !duration) return
     const now = context.currentTime
     const remaining = Math.max(0, duration - elapsed)
-    const fade = Math.min(0.03, remaining / 2)
+    const fade = Math.min(requestedFade, remaining / 2)
     const gain = graph.envelopeGain.gain
-    gain.setValueAtTime(gain.value, now)
-    gain.setValueAtTime(gain.value, now + Math.max(0, remaining - fade))
+    gain.setValueAtTime(relativeGain, now + Math.max(0, remaining - fade))
     gain.linearRampToValueAtTime(0, now + remaining)
   }
 

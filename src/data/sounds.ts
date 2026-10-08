@@ -32,7 +32,7 @@ export const soundDefinitions: SoundDefinition[] = [
     defaultVolume: 0.5,
     defaultDelay: 5,
     kind: 'short',
-    fadeDuration: 0.03,
+    fadeDuration: 0.4,
     category: 'Fauna y clima',
   },
   {
@@ -43,7 +43,7 @@ export const soundDefinitions: SoundDefinition[] = [
     defaultVolume: 0.35,
     defaultDelay: 0,
     kind: 'short',
-    fadeDuration: 0.03,
+    fadeDuration: 0.3,
     category: 'Fauna y clima',
   },
   {
@@ -54,7 +54,7 @@ export const soundDefinitions: SoundDefinition[] = [
     defaultVolume: 0.25,
     defaultDelay: 0,
     kind: 'short',
-    fadeDuration: 0.03,
+    fadeDuration: 0.3,
     category: 'Fauna y clima',
   },
   {
@@ -65,7 +65,7 @@ export const soundDefinitions: SoundDefinition[] = [
     defaultVolume: 0.20,
     defaultDelay: 0,
     kind: 'short',
-    fadeDuration: 0.03,
+    fadeDuration: 0.18,
     category: 'Fauna y clima',
   },
   {
@@ -76,7 +76,7 @@ export const soundDefinitions: SoundDefinition[] = [
     defaultVolume: 0.20,
     defaultDelay: 0,
     kind: 'short',
-    fadeDuration: 0.03,
+    fadeDuration: 0.35,
     category: 'Fauna y clima',
   },
 ]
