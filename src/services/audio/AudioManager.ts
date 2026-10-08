@@ -2,6 +2,9 @@ import type { SoundDefinition, SoundPlaybackStatus, SoundState } from '@/types/s
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 const STOP_FADE_SECONDS = 0.2
+// Safari puede reportar el final del MP3 unos milisegundos antes o después de
+// lo que oye Web Audio. Cerramos la envolvente antes del borde técnico.
+const END_GUARD_SECONDS = 0.08
 
 type AudioGraph = {
   source: MediaElementAudioSourceNode
@@ -51,27 +54,17 @@ class AudioManager {
     this.activityListener = listener
   }
 
-  async unlock() {
-    this.connectAudioGraph()
+  async unlock(soundId: string) {
+    this.connectAudioGraph(soundId)
     const resumePromise = this.resumeAudioContext()
-    const attempts = Array.from(this.elements.values()).map(async (element) => {
-      try {
-        element.muted = true
-        element.currentTime = 0
-        await element.play()
-        element.pause()
-        element.currentTime = 0
-      } catch {
-        // El siguiente toque para activar una pista volverá a intentarlo.
-      } finally {
-        element.muted = false
-      }
-    })
-    await Promise.allSettled([...attempts, resumePromise])
+    const element = this.elements.get(soundId)
+    const warmup = element ? this.warmupElement(element) : Promise.resolve()
+    await Promise.allSettled([warmup, resumePromise])
     this.unlocked = true
   }
 
   async updatePlayback(sound: SoundState) {
+    this.connectAudioGraph(sound.id)
     this.playback.set(sound.id, { ...sound })
     this.setUserVolume(sound.id, sound.volume)
     this.invalidate(sound.id)
@@ -206,8 +199,7 @@ class AudioManager {
     if (!this.isCurrent(soundId, generation)) return false
     const duration = await this.durationOf(element, soundId, generation)
     if (!this.isCurrent(soundId, generation)) return false
-    const fade = Math.min(state.fadeDuration, duration / 2)
-    this.scheduleLongEnvelope(soundId, duration, fade)
+    this.scheduleLongEnvelope(soundId, duration, state.fadeDuration)
     return this.waitForEnd(soundId, generation, element)
   }
 
@@ -233,17 +225,19 @@ class AudioManager {
     return 0.7 + Math.random() * 0.3
   }
 
-  private scheduleLongEnvelope(soundId: string, duration: number, fade: number) {
+  private scheduleLongEnvelope(soundId: string, duration: number, requestedFade: number) {
     const graph = this.graphs.get(soundId)
     const context = this.audioContext
     if (!graph || !context) return
     const now = context.currentTime
     const gain = graph.envelopeGain.gain
+    const safeDuration = Math.max(0, duration - END_GUARD_SECONDS)
+    const fade = Math.min(requestedFade, safeDuration / 2)
     gain.cancelScheduledValues(now)
     gain.setValueAtTime(0, now)
     gain.linearRampToValueAtTime(1, now + fade)
-    gain.setValueAtTime(1, now + Math.max(fade, duration - fade))
-    gain.linearRampToValueAtTime(0, now + duration)
+    gain.setValueAtTime(1, now + Math.max(fade, safeDuration - fade))
+    gain.linearRampToValueAtTime(0, now + safeDuration)
   }
 
   private scheduleShortEnvelope(soundId: string, relativeGain: number, requestedFade: number) {
@@ -268,7 +262,7 @@ class AudioManager {
     const context = this.audioContext
     if (!graph || !context || !duration) return
     const now = context.currentTime
-    const remaining = Math.max(0, duration - elapsed)
+    const remaining = Math.max(0, duration - elapsed - END_GUARD_SECONDS)
     const fade = Math.min(requestedFade, remaining / 2)
     const gain = graph.envelopeGain.gain
     gain.setValueAtTime(relativeGain, now + Math.max(0, remaining - fade))
@@ -291,21 +285,39 @@ class AudioManager {
     if (graph && this.audioContext) graph.envelopeGain.gain.setValueAtTime(value, this.audioContext.currentTime)
   }
 
-  private connectAudioGraph() {
+  private connectAudioGraph(soundId?: string) {
     const context = this.getOrCreateAudioContext()
     if (!context || !this.masterGain || !this.compressor) return
-    this.elements.forEach((element, soundId) => {
-      if (this.graphs.has(soundId)) return
+    const entries = soundId
+      ? [[soundId, this.elements.get(soundId)] as const]
+      : Array.from(this.elements.entries())
+    entries.forEach(([id, element]) => {
+      if (!element) return
+      if (this.graphs.has(id)) return
       const source = context.createMediaElementSource(element)
       const userGain = context.createGain()
       const envelopeGain = context.createGain()
       source.connect(userGain)
       userGain.connect(envelopeGain)
       envelopeGain.connect(this.compressor)
-      this.graphs.set(soundId, { source, userGain, envelopeGain })
-      this.setUserVolume(soundId, this.playback.get(soundId)?.volume ?? this.definitions.get(soundId)?.defaultVolume ?? 1)
-      this.setEnvelope(soundId, 0)
+      this.graphs.set(id, { source, userGain, envelopeGain })
+      this.setUserVolume(id, this.playback.get(id)?.volume ?? this.definitions.get(id)?.defaultVolume ?? 1)
+      this.setEnvelope(id, 0)
     })
+  }
+
+  private async warmupElement(element: HTMLAudioElement) {
+    try {
+      element.muted = true
+      element.currentTime = 0
+      await element.play()
+      element.pause()
+      element.currentTime = 0
+    } catch {
+      // El intento de reproducción real seguirá siendo posible en el toque.
+    } finally {
+      element.muted = false
+    }
   }
 
   private getOrCreateAudioContext() {

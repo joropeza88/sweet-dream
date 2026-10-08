@@ -25,7 +25,9 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
   const sounds = ref<SoundState[]>(
     soundDefinitions.map((sound) => ({
       ...sound,
-      enabled: preferences.sounds?.[sound.id]?.enabled ?? false,
+      // Conservamos controles, pero no restauramos la reproducción: Safari
+      // exige un gesto válido y un estado visual activo sin audio es confuso.
+      enabled: false,
       volume: clamp(preferences.sounds?.[sound.id]?.volume ?? sound.defaultVolume, 0, 1),
       delay: clamp(preferences.sounds?.[sound.id]?.delay ?? sound.defaultDelay, 0, 12),
       isPending: false,
@@ -60,19 +62,16 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
 
   const findSound = (soundId: string) => sounds.value.find((sound) => sound.id === soundId)
 
-  const ensureUnlocked = async () => {
+  const ensureUnlocked = async (soundId: string) => {
     if (audioManager.unlockedByUser) {
       unlockRequested.value = true
       return true
     }
 
     try {
-      await audioManager.unlock()
+      await audioManager.unlock(soundId)
       audioManager.setMasterVolume(masterVolume.value)
       unlockRequested.value = true
-      // Las pistas activas guardadas se restauran sólo después de un gesto
-      // válido; nunca se inicia audio automáticamente al abrir la PWA.
-      await Promise.all(sounds.value.filter((sound) => sound.enabled).map((sound) => updateSound(sound.id)))
       return true
     } catch {
       return false
@@ -99,7 +98,7 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
 
     const nextValue = forceValue ?? !sound.enabled
     if (nextValue && !unlockRequested.value) {
-      const unlocked = await ensureUnlocked()
+      const unlocked = await ensureUnlocked(soundId)
       if (!unlocked) {
         return
       }

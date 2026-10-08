@@ -8,7 +8,7 @@
       >
         <div class="w-full max-w-sm rounded-[32px] border border-white/45 bg-white/55 p-8 shadow-card backdrop-blur-2xl">
           <p class="text-xs uppercase tracking-[0.28em] text-mist-600">Sweet Dream</p>
-          <h1 class="mt-4 font-serif text-4xl text-mist-900">Cargando paisajes sonoros</h1>
+          <h1 class="mt-4 font-serif text-4xl text-mist-900">Cargando</h1>
           <p class="mt-3 text-sm leading-6 text-mist-700">
             Precargando audio para una reproducción más fluida al empezar.
           </p>

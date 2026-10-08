@@ -70,7 +70,7 @@ export const soundDefinitions: SoundDefinition[] = [
   },
   {
     id: 'rhinophrynus_dorsalis',
-    name: 'Sapo Borracho',
+    name: 'Sapo Moi',
     icon: '🐸',
     audioSrc: '/audio/rhinophrynus_dorsalis.mp3',
     defaultVolume: 0.20,
