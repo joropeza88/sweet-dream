@@ -7,7 +7,7 @@ export const useAudioUnlock = () => {
   const { unlockRequested } = storeToRefs(store)
 
   const unlockLabel = computed(() =>
-    unlockRequested.value ? 'Audio listo para fondo y pantalla bloqueada' : 'Toca para habilitar audio en iPhone/Android',
+    unlockRequested.value ? 'Audio listo para ajustar cada volumen' : 'Toca para habilitar el audio en iPhone/Android',
   )
 
   return {

@@ -14,7 +14,7 @@
       <p class="text-xs uppercase tracking-[0.24em] text-mist-600">Compatibilidad iOS / Android</p>
       <p class="mt-2 text-sm text-mist-800">{{ unlockLabel }}</p>
       <p class="mt-1 text-xs text-mist-600">
-        La primera interacción desbloquea la reproducción persistente en PWA y Safari.
+        La primera interacción activa los controles de volumen en PWA y Safari.
       </p>
     </button>
 

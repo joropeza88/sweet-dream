@@ -6,6 +6,7 @@ class AudioManager {
   private elements = new Map<string, HTMLAudioElement>()
   private gainNodes = new Map<string, GainNode>()
   private sourceNodes = new Map<string, MediaElementAudioSourceNode>()
+  private volumes = new Map<string, number>()
   private pendingTimers = new Map<string, number>()
   private registered = new Map<string, SoundDefinition>()
   private audioContext: AudioContext | null = null
@@ -24,11 +25,12 @@ class AudioManager {
 
       const element = new Audio(definition.audioSrc)
       element.loop = definition.loop
-      element.volume = definition.defaultVolume
+      // El volumen se controla exclusivamente desde el GainNode. Mantener el
+      // elemento nativo a 1 evita aplicar el volumen dos veces.
+      element.volume = 1
       element.preload = 'metadata'
       element.playsInline = true
-      this.ensureAudioRouting(definition.id, element)
-      this.applyVolume(definition.id, definition.defaultVolume)
+      this.volumes.set(definition.id, definition.defaultVolume)
       element.addEventListener('playing', () => {
         this.activityListener?.(definition.id, 'playing')
         this.syncMediaSession()
@@ -48,7 +50,11 @@ class AudioManager {
   }
 
   async unlock() {
-    await this.resumeAudioContext()
+    // Safari sólo permite crear y reanudar el contexto de Web Audio a partir
+    // de un gesto del usuario. No lo inicializamos al cargar la app: así los
+    // GainNode conservan el control individual de volumen en iOS.
+    this.connectAudioGraph()
+    const resumePromise = this.resumeAudioContext()
 
     const attempts = Array.from(this.elements.values()).map(async (element) => {
       try {
@@ -64,7 +70,7 @@ class AudioManager {
       }
     })
 
-    await Promise.allSettled(attempts)
+    await Promise.allSettled([...attempts, resumePromise])
     this.unlocked = true
   }
 
@@ -136,6 +142,7 @@ class AudioManager {
     this.elements.clear()
     this.gainNodes.clear()
     this.sourceNodes.clear()
+    this.volumes.clear()
     this.registered.clear()
   }
 
@@ -187,6 +194,19 @@ class AudioManager {
     this.syncMediaSession()
   }
 
+  private connectAudioGraph() {
+    const context = this.getOrCreateAudioContext()
+
+    if (!context) {
+      return
+    }
+
+    this.elements.forEach((element, soundId) => {
+      this.ensureAudioRouting(soundId, element)
+      this.applyVolume(soundId, this.volumes.get(soundId) ?? 1)
+    })
+  }
+
   private ensureAudioRouting(soundId: string, element: HTMLAudioElement) {
     const context = this.getOrCreateAudioContext()
 
@@ -211,9 +231,14 @@ class AudioManager {
 
   private applyVolume(soundId: string, volume: number) {
     const nextVolume = clamp(volume, 0, 1)
+    this.volumes.set(soundId, nextVolume)
     const gain = this.gainNodes.get(soundId)
 
     if (gain) {
+      const element = this.elements.get(soundId)
+      if (element) {
+        element.volume = 1
+      }
       gain.gain.value = nextVolume
       return
     }
