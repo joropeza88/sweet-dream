@@ -2,12 +2,9 @@
   <article class="rounded-[24px] border px-4 py-4 shadow-card backdrop-blur-xl transition" :class="sound.enabled ? 'border-white/60 bg-white/65' : 'border-white/30 bg-white/35'">
     <div class="flex items-start justify-between gap-3">
       <div class="flex min-w-0 items-center gap-3">
-        <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-2xl shadow-sm" :class="sound.enabled ? 'bg-mist-900 text-white' : 'bg-white/75 text-mist-800'">{{ sound.icon }}</div>
+        <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-2xl shadow-sm" :class="sound.status === 'playing' ? 'bg-emerald-500 text-white' : sound.enabled ? 'bg-mist-900 text-white' : 'bg-white/75 text-mist-800'">{{ sound.icon }}</div>
         <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-2">
-            <h3 class="text-base font-semibold text-mist-900">{{ sound.name }}</h3>
-            <span class="rounded-full px-2 py-1 text-[10px] uppercase tracking-[0.14em]" :class="sound.enabled ? 'bg-emerald-100 text-emerald-700' : 'bg-mist-100 text-mist-600'">{{ statusLabel }}</span>
-          </div>
+          <h3 class="text-base font-semibold text-mist-900">{{ sound.name }}</h3>
           <p class="mt-1 text-xs text-mist-600">{{ sound.kind === 'long' ? 'Ciclo con transición suave' : 'Llamadas naturales aleatorias' }}</p>
         </div>
       </div>
@@ -33,7 +30,6 @@ import RangeSlider from '@/components/RangeSlider.vue'
 import type { SoundState } from '@/types/sound'
 
 const props = defineProps<{ sound: SoundState }>()
-const statusLabel = computed(() => !props.sound.enabled ? 'Desactivado' : props.sound.status === 'waiting' ? 'En pausa' : 'Reproduciendo')
 const delayLabel = computed(() => props.sound.kind === 'long' ? 'Pausa entre ciclos' : 'Intervalo máximo')
 const delayHelp = computed(() => props.sound.kind === 'long' ? 'Espera fija después de cada reproducción.' : 'Espera aleatoria de hasta el valor indicado.')
 
