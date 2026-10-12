@@ -11,6 +11,14 @@ export default defineConfig({
       includeAssets: [
         'favicon.svg',
         'bg.png',
+        'audio/rain.mp3',
+        'audio/wind.mp3',
+        'audio/thunder.mp3',
+        'audio/crickets.mp3',
+        'audio/frogs.mp3',
+        'audio/frog2.mp3',
+        'audio/toads.mp3',
+        'audio/rhinophrynus_dorsalis.mp3',
         'icons/apple-touch-icon.png',
         'icons/pwa-192.png',
         'icons/pwa-512.png',
@@ -51,7 +59,12 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,wav}'],
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,wav,mp3}'],
+        globIgnores: [
+          'audio/originals/**',
+          'audio/__rhinophrynus_dorsalis.mp3',
+        ],
         runtimeCaching: [
           {
             urlPattern: ({ request }) => request.destination === 'audio',

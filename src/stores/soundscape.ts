@@ -62,20 +62,10 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
 
   const findSound = (soundId: string) => sounds.value.find((sound) => sound.id === soundId)
 
-  const ensureUnlocked = async (soundId: string) => {
-    if (audioManager.unlockedByUser) {
-      unlockRequested.value = true
-      return true
-    }
-
-    try {
-      await audioManager.unlock(soundId)
-      audioManager.setMasterVolume(masterVolume.value)
-      unlockRequested.value = true
-      return true
-    } catch {
-      return false
-    }
+  const ensureUnlocked = (sound: SoundState) => {
+    audioManager.startFromUserGesture(sound)
+    audioManager.setMasterVolume(masterVolume.value)
+    unlockRequested.value = true
   }
 
   const updateSound = async (soundId: string) => {
@@ -97,16 +87,15 @@ export const useSoundscapeStore = defineStore('soundscape', () => {
     }
 
     const nextValue = forceValue ?? !sound.enabled
-    if (nextValue && !unlockRequested.value) {
-      const unlocked = await ensureUnlocked(soundId)
-      if (!unlocked) {
-        return
-      }
-    }
-
     sound.enabled = nextValue
     sound.isPending = false
     sound.status = nextValue ? 'playing' : 'idle'
+
+    if (nextValue) {
+      ensureUnlocked(sound)
+      return
+    }
+
     await updateSound(soundId)
   }
 

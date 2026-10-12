@@ -54,13 +54,19 @@ class AudioManager {
     this.activityListener = listener
   }
 
-  async unlock(soundId: string) {
-    this.connectAudioGraph(soundId)
-    const resumePromise = this.resumeAudioContext()
-    const element = this.elements.get(soundId)
-    const warmup = element ? this.warmupElement(element) : Promise.resolve()
-    await Promise.allSettled([warmup, resumePromise])
+  startFromUserGesture(sound: SoundState) {
+    // Todo lo previo al primer await ocurre dentro del toque del usuario. En
+    // Safari iOS esto es necesario para que la reproducción real sea válida.
+    this.playback.set(sound.id, { ...sound })
+    this.connectAudioGraph(sound.id)
+    this.setUserVolume(sound.id, sound.volume)
+    this.invalidate(sound.id)
+    this.activeIds.add(sound.id)
+    const generation = this.currentGeneration(sound.id)
+    void this.resumeAudioContext()
+    void this.runCycle(sound.id, generation)
     this.unlocked = true
+    this.syncMediaSession()
   }
 
   async updatePlayback(sound: SoundState) {
@@ -195,11 +201,27 @@ class AudioManager {
     element.pause()
     element.currentTime = 0
     this.setEnvelope(soundId, 0)
-    try { await element.play() } catch { return false }
+    let hasScheduledEnvelope = false
+    const scheduleEnvelope = () => {
+      const duration = this.readDuration(element)
+      if (!duration) return
+      hasScheduledEnvelope = true
+      this.scheduleLongEnvelope(soundId, duration, element.currentTime, state.fadeDuration)
+    }
+    element.addEventListener('playing', scheduleEnvelope, { once: true })
+    try {
+      await element.play()
+    } catch (error) {
+      element.removeEventListener('playing', scheduleEnvelope)
+      this.reportPlaybackFailure(soundId, error)
+      return false
+    }
     if (!this.isCurrent(soundId, generation)) return false
     const duration = await this.durationOf(element, soundId, generation)
     if (!this.isCurrent(soundId, generation)) return false
-    this.scheduleLongEnvelope(soundId, duration, state.fadeDuration)
+    if (!hasScheduledEnvelope) {
+      this.scheduleLongEnvelope(soundId, duration, element.currentTime, state.fadeDuration)
+    }
     return this.waitForEnd(soundId, generation, element)
   }
 
@@ -210,8 +232,15 @@ class AudioManager {
     element.pause()
     element.currentTime = 0
     const relativeGain = this.randomDistanceGain()
-    this.scheduleShortEnvelope(soundId, relativeGain, state.fadeDuration)
-    try { await element.play() } catch { return false }
+    const scheduleEnvelope = () => this.scheduleShortEnvelope(soundId, relativeGain, state.fadeDuration)
+    element.addEventListener('playing', scheduleEnvelope, { once: true })
+    try {
+      await element.play()
+    } catch (error) {
+      element.removeEventListener('playing', scheduleEnvelope)
+      this.reportPlaybackFailure(soundId, error)
+      return false
+    }
     const duration = await this.durationOf(element, soundId, generation)
     if (!this.isCurrent(soundId, generation)) return false
     this.scheduleShortFadeOut(soundId, relativeGain, duration, element.currentTime, state.fadeDuration)
@@ -225,19 +254,24 @@ class AudioManager {
     return 0.7 + Math.random() * 0.3
   }
 
-  private scheduleLongEnvelope(soundId: string, duration: number, requestedFade: number) {
+  private scheduleLongEnvelope(
+    soundId: string,
+    duration: number,
+    elapsed: number,
+    requestedFade: number,
+  ) {
     const graph = this.graphs.get(soundId)
     const context = this.audioContext
     if (!graph || !context) return
     const now = context.currentTime
     const gain = graph.envelopeGain.gain
-    const safeDuration = Math.max(0, duration - END_GUARD_SECONDS)
-    const fade = Math.min(requestedFade, safeDuration / 2)
+    const remaining = Math.max(0, duration - elapsed - END_GUARD_SECONDS)
+    const fade = Math.min(requestedFade, remaining / 2)
     gain.cancelScheduledValues(now)
     gain.setValueAtTime(0, now)
     gain.linearRampToValueAtTime(1, now + fade)
-    gain.setValueAtTime(1, now + Math.max(fade, safeDuration - fade))
-    gain.linearRampToValueAtTime(0, now + safeDuration)
+    gain.setValueAtTime(1, now + Math.max(fade, remaining - fade))
+    gain.linearRampToValueAtTime(0, now + remaining)
   }
 
   private scheduleShortEnvelope(soundId: string, relativeGain: number, requestedFade: number) {
@@ -306,18 +340,15 @@ class AudioManager {
     })
   }
 
-  private async warmupElement(element: HTMLAudioElement) {
-    try {
-      element.muted = true
-      element.currentTime = 0
-      await element.play()
-      element.pause()
-      element.currentTime = 0
-    } catch {
-      // El intento de reproducción real seguirá siendo posible en el toque.
-    } finally {
-      element.muted = false
-    }
+  private readDuration(element: HTMLAudioElement) {
+    return Number.isFinite(element.duration) && element.duration > 0 ? element.duration : null
+  }
+
+  private reportPlaybackFailure(soundId: string, error: unknown) {
+    this.activeIds.delete(soundId)
+    this.activityListener?.(soundId, 'idle')
+    this.syncMediaSession()
+    console.warn(`No se pudo reproducir el sonido "${soundId}"`, error)
   }
 
   private getOrCreateAudioContext() {
